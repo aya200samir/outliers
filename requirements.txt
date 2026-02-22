@@ -3,8 +3,4 @@ pandas
 numpy
 plotly
 scikit-learn
-geopandas
-folium
-streamlit-folium
-matplotlib
 shap
