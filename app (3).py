@@ -17,12 +17,12 @@ from io import StringIO
 warnings.filterwarnings('ignore')
 
 # ==================== مكتبات التعلم الآلي ====================
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.metrics import (accuracy_score, precision_score, recall_score, 
-                             f1_score, confusion_matrix, mean_squared_error, 
-                             r2_score, classification_report, roc_curve, auc)
+                             f1_score, confusion_matrix, classification_report,
+                             roc_curve, auc)
 
 # محاولة استيراد SHAP للتفسير
 try:
@@ -39,7 +39,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ==================== CSS مخصص - مستوحى من Mizan AI ====================
+# ==================== CSS مخصص ====================
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700;900&display=swap');
@@ -294,6 +294,8 @@ if 'df' not in st.session_state:
     st.session_state.df = None
 if 'model_pack' not in st.session_state:
     st.session_state.model_pack = None
+if 'anomalies' not in st.session_state:
+    st.session_state.anomalies = None
 
 # ==================== تحميل بيانات جرائم السرقة في تشيلي ====================
 @st.cache_data
@@ -316,7 +318,7 @@ def load_chile_robbery_data():
         'Región Metropolitana': ['Santiago', 'Cordillera', 'Chacabuco', 'Maipo', 'Melipilla', 'Talagante'],
         'Valparaíso': ['Valparaíso', 'Los Andes', 'San Felipe', 'Quillota', 'San Antonio', 'Marga Marga'],
         'Biobío': ['Concepción', 'Arauco', 'Biobío'],
-        'O'Higgins': ['Cachapoal', 'Colchagua', 'Cardenal Caro'],
+        "O'Higgins": ['Cachapoal', 'Colchagua', 'Cardenal Caro'],  # تم التعديل هنا
         'Maule': ['Curicó', 'Talca', 'Linares', 'Cauquenes'],
         'La Araucanía': ['Cautín', 'Malleco']
     }
@@ -449,13 +451,14 @@ def train_model(df):
     months = ['enr', 'fbr', 'mrz', 'abr', 'may', 'jun', 'jul', 'ags', 'spt', 'oct', 'nvm', 'dcm']
     years = [2018, 2019, 2020]
     
+    df_encoded = df.copy()
+    
     for year in years:
         year_months = [f'{m}{year}' for m in months]
-        df[f'متوسط_{year}'] = df[year_months].mean(axis=1)
-        df[f'انحراف_{year}'] = df[year_months].std(axis=1)
+        df_encoded[f'متوسط_{year}'] = df_encoded[year_months].mean(axis=1)
+        df_encoded[f'انحراف_{year}'] = df_encoded[year_months].std(axis=1)
         feature_cols.extend([f'متوسط_{year}', f'انحراف_{year}'])
     
-    df_encoded = df.copy()
     encoders = {}
     
     for col in categorical_cols:
@@ -585,6 +588,9 @@ def main():
                 df = load_chile_robbery_data()
                 st.session_state.df = df
                 st.session_state.data_loaded = True
+                # كشف الشذوذ مباشرة بعد التحميل
+                anomalies, df_with_scores = detect_anomalies(df)
+                st.session_state.anomalies = anomalies
             st.success(f"✅ تم تحميل {len(df)} منطقة بنجاح")
         
         st.markdown("---")
@@ -598,8 +604,15 @@ def main():
                 max_value=3.0,
                 value=1.5,
                 step=0.1,
-                help="كلما زادت القيمة، قل عدد الحالات المشبوهة"
+                help="كلما زادت القيمة، قل عدد الحالات المشبوهة",
+                key='threshold_slider'
             )
+            
+            # إعادة كشف الشذوذ عند تغيير العتبة
+            if threshold != st.session_state.get('last_threshold', 1.5):
+                anomalies, _ = detect_anomalies(st.session_state.df, threshold)
+                st.session_state.anomalies = anomalies
+                st.session_state.last_threshold = threshold
             
             st.markdown("### 🧠 تدريب النموذج")
             if st.button("بدء تدريب النموذج", use_container_width=True):
@@ -654,7 +667,7 @@ def main():
     
     # عرض البيانات
     df = st.session_state.df
-    threshold = st.session_state.get('threshold', 1.5)
+    anomalies = st.session_state.anomalies
     
     st.markdown("## 📊 نظرة عامة على بيانات السرقة في تشيلي")
     
@@ -716,14 +729,14 @@ def main():
             title='توزيع جرائم السرقة في تشيلي'
         )
         fig.update_layout(mapbox_style="open-street-map")
-        fig.update_layout(margin={"r":0,"t":30,"l":0,"b":0})
+        fig.update_layout(margin={"r":0, "t":30, "l":0, "b":0})
         st.plotly_chart(fig, use_container_width=True)
         st.markdown('</div>', unsafe_allow_html=True)
         
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown('<div class="card-title">📋 بيانات المناطق</div>', unsafe_allow_html=True)
         display_cols = ['Region', 'Provincia', 'Total', 'مستوى_الخطورة', 'شذوذ']
-        st.dataframe(df[display_cols].head(20), use_container_width=True)
+        st.dataframe(df[display_cols], use_container_width=True)
         st.markdown('</div>', unsafe_allow_html=True)
     
     with tab2:
@@ -810,23 +823,30 @@ def main():
                                 color_continuous_scale='Reds')
                 st.plotly_chart(fig, use_container_width=True)
                 st.markdown('</div>', unsafe_allow_html=True)
+            
+            with col2:
+                st.markdown('<div class="card">', unsafe_allow_html=True)
+                st.markdown('<div class="card-title">📊 تقرير التصنيف</div>', unsafe_allow_html=True)
+                report = classification_report(model_pack['y_test'], model_pack['y_pred'], 
+                                              target_names=model_pack['classes'], output_dict=True)
+                report_df = pd.DataFrame(report).transpose()
+                st.dataframe(report_df, use_container_width=True)
+                st.markdown('</div>', unsafe_allow_html=True)
     
     with tab4:
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown('<div class="card-title">🚨 كشف الحالات الشاذة</div>', unsafe_allow_html=True)
-        
-        anomalies, df_with_scores = detect_anomalies(df, threshold)
         
         st.markdown(f"""
         <div style="background: linear-gradient(135deg, #f0f7ff, #ffffff); padding: 1.5rem; border-radius: 15px;">
             <h4>نتائج التحليل:</h4>
             <p>📊 متوسط الجرائم: {df['Total'].mean():.0f}</p>
             <p>📈 انحراف معياري: {df['Total'].std():.0f}</p>
-            <p>🚨 عدد الحالات الشاذة: {len(anomalies)}</p>
+            <p>🚨 عدد الحالات الشاذة: {len(anomalies) if anomalies is not None else 0}</p>
         </div>
         """, unsafe_allow_html=True)
         
-        if len(anomalies) > 0:
+        if anomalies is not None and len(anomalies) > 0:
             st.markdown(f"""
             <div class="alert-warning">
                 ⚠️ تم اكتشاف {len(anomalies)} منطقة لا تتبع النمط الطبيعي.
@@ -839,14 +859,15 @@ def main():
             st.dataframe(anomalies[display_cols], use_container_width=True)
             
             # رسم بياني للتوزيع
-            fig = px.histogram(df_with_scores, x='Total', nbins=20,
+            fig = px.histogram(df, x='Total', nbins=20,
                               title='توزيع الجرائم مع تحديد المناطق الشاذة',
                               color_discrete_sequence=['#8B1E3F'])
             fig.add_vline(x=df['Total'].mean(), line_dash="dash", 
                          line_color="blue", annotation_text="المتوسط")
             for _, row in anomalies.iterrows():
                 fig.add_vline(x=row['Total'], line_dash="dot", 
-                             line_color="red", opacity=0.3)
+                             line_color="red", opacity=0.3,
+                             annotation_text=row['Provincia'][:10])
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.markdown("""
@@ -884,14 +905,15 @@ def main():
             st.markdown('<div class="card">', unsafe_allow_html=True)
             st.markdown('<div class="card-title">🧠 تحليل منطقي</div>', unsafe_allow_html=True)
             
-            top_feature = feature_importance[0]['الميزة']
-            st.markdown(f"""
-            <div class="alert-info">
-                <strong>🔎 الميزة الأكثر تأثيراً هي "{top_feature}"</strong><br><br>
-                هذا يعني أن {top_feature} هو العامل الأهم في تحديد مستوى خطورة المنطقة.
-                المناطق ذات القيم الشاذة في هذه الميزة تحتاج إلى تدقيق إضافي.
-            </div>
-            """, unsafe_allow_html=True)
+            if feature_importance:
+                top_feature = feature_importance[0]['الميزة']
+                st.markdown(f"""
+                <div class="alert-info">
+                    <strong>🔎 الميزة الأكثر تأثيراً هي "{top_feature}"</strong><br><br>
+                    هذا يعني أن {top_feature} هو العامل الأهم في تحديد مستوى خطورة المنطقة.
+                    المناطق ذات القيم الشاذة في هذه الميزة تحتاج إلى تدقيق إضافي.
+                </div>
+                """, unsafe_allow_html=True)
             
             st.markdown('</div>', unsafe_allow_html=True)
     
