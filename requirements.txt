@@ -3,5 +3,8 @@ pandas
 numpy
 plotly
 scikit-learn
-shap
+geopandas
+folium
+streamlit-folium
 matplotlib
+shap
